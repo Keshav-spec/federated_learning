@@ -67,15 +67,22 @@ class CVFLStrategy(FedAvg):
         if not results:
             return None, {}
 
-        # Unpack results from clients
-        client_ndarrays = [parameters_to_ndarrays(fit_res.parameters) for _, fit_res in results]
+        # Unpack full parameter vectors from each client
+        client_params = [parameters_to_ndarrays(fit_res.parameters)[0] for _, fit_res in results]
         
-        # Perform SignScore robust aggregation
-        client_signs = [arr[0].astype(np.int8) for arr in client_ndarrays]
-        agg_signs, sign_scores, weights = self.aggregator.aggregate(client_signs)
-
-        # Convert back to parameters
-        aggregated_ndarrays = [agg_signs.astype(np.float32)]
+        # Derive sign vectors for robust weight calculation (sign of each weight)
+        client_signs = [np.sign(p).astype(np.int8) for p in client_params]
+        
+        # Compute robust SignScore weights
+        median_sign = self.aggregator.compute_median_sign(client_signs)
+        sign_scores = self.aggregator.compute_sign_scores(client_signs, median_sign)
+        weights = self.aggregator.compute_robust_weights(sign_scores, adaptive_filter=True)
+        
+        # Weighted aggregation of the full‑dimensional parameter arrays
+        stacked_params = np.stack(client_params, axis=0)  # shape: (N, d)
+        # tensordot performs Σ_i weight_i * param_i across the first axis
+        weighted_sum = np.tensordot(weights, stacked_params, axes=([0], [0]))
+        aggregated_ndarrays = [weighted_sum.astype(np.float32)]
         parameters_aggregated = ndarrays_to_parameters(aggregated_ndarrays)
 
         metrics_aggregated = {
